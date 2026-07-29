@@ -20,9 +20,14 @@ from src.dataset import DatasetScanner
 from src.image_processing import ImageProcessor
 from src.organoid_analyzer import OrganoidAnalyzer
 
-app = FastAPI(title="Heidelberg Organoid & Cell Analysis Workbench", version="5.4.0")
+import hashlib
+
+app = FastAPI(title="Heidelberg Organoid & Cell Analysis Workbench", version="6.0.0")
 
 BASE_DIR = "/home/mrtemroztrk/Projects/Heidelberg/JX"
+CACHE_DIR = os.path.join(BASE_DIR, "cache")
+os.makedirs(CACHE_DIR, exist_ok=True)
+
 scanner = DatasetScanner(os.path.join(BASE_DIR, "data"))
 analyzer = OrganoidAnalyzer()
 
@@ -34,6 +39,72 @@ app.mount("/static", StaticFiles(directory=static_dir), name="static")
 RAW_ARR_CACHE = {}
 OVERLAY_CACHE = {}
 SESSION_DF_CACHE = {}
+
+def _cache_key(abs_path: str) -> str:
+    """Generates a short, filesystem-safe hash key for an image path."""
+    return hashlib.md5(abs_path.encode()).hexdigest()[:16]
+
+def _save_cache_to_disk(abs_path: str, masks: np.ndarray, df: pd.DataFrame):
+    """Persists Cellpose segmentation results to disk for instant reload on restart."""
+    key = _cache_key(abs_path)
+    np.savez_compressed(os.path.join(CACHE_DIR, f"{key}_masks.npz"), masks=masks)
+    df.to_csv(os.path.join(CACHE_DIR, f"{key}_features.csv"), index=False)
+    # Save the original path mapping
+    manifest_path = os.path.join(CACHE_DIR, "manifest.json")
+    manifest = {}
+    if os.path.exists(manifest_path):
+        with open(manifest_path, 'r') as f:
+            manifest = json.load(f)
+    manifest[key] = abs_path
+    with open(manifest_path, 'w') as f:
+        json.dump(manifest, f, indent=2)
+
+def _load_cache_from_disk(abs_path: str):
+    """Loads cached segmentation results from disk. Returns (masks, df) or None."""
+    key = _cache_key(abs_path)
+    masks_path = os.path.join(CACHE_DIR, f"{key}_masks.npz")
+    features_path = os.path.join(CACHE_DIR, f"{key}_features.csv")
+    if os.path.exists(masks_path) and os.path.exists(features_path):
+        masks = np.load(masks_path)['masks']
+        df = pd.read_csv(features_path)
+        return masks, df
+    return None
+
+def _delete_cache_from_disk(abs_path: str):
+    """Deletes cached segmentation results from disk for a specific image."""
+    key = _cache_key(abs_path)
+    for ext in ['_masks.npz', '_features.csv']:
+        p = os.path.join(CACHE_DIR, f"{key}{ext}")
+        if os.path.exists(p):
+            os.remove(p)
+    manifest_path = os.path.join(CACHE_DIR, "manifest.json")
+    if os.path.exists(manifest_path):
+        with open(manifest_path, 'r') as f:
+            manifest = json.load(f)
+        manifest.pop(key, None)
+        with open(manifest_path, 'w') as f:
+            json.dump(manifest, f, indent=2)
+
+def _preload_disk_cache():
+    """On startup, loads all disk-cached segmentation results into SEGMENTATION_CACHE."""
+    manifest_path = os.path.join(CACHE_DIR, "manifest.json")
+    if not os.path.exists(manifest_path):
+        return
+    with open(manifest_path, 'r') as f:
+        manifest = json.load(f)
+    loaded = 0
+    for key, abs_path in manifest.items():
+        if abs_path in SEGMENTATION_CACHE:
+            continue
+        result = _load_cache_from_disk(abs_path)
+        if result is not None:
+            masks, df = result
+            SEGMENTATION_CACHE[abs_path] = {'masks': masks, 'df': df, 'arr': None}
+            loaded += 1
+    print(f"[CACHE] Preloaded {loaded} segmentation results from disk cache.")
+
+SEGMENTATION_CACHE = {}
+_preload_disk_cache()
 
 def get_cached_raw_image(abs_path: str):
     """Loads and caches raw RGB image array in memory."""
@@ -100,7 +171,7 @@ class AnalysisRequest(BaseModel):
     min_green_pixels: int = 1
     force_reanalyze: bool = False
 
-SEGMENTATION_CACHE = {}
+
 
 @app.post("/api/analyze/cellpose_viability")
 def analyze_cellpose_viability(req: AnalysisRequest):
@@ -114,10 +185,13 @@ def analyze_cellpose_viability(req: AnalysisRequest):
     arr = get_cached_raw_image(abs_path)
     orig_h, orig_w = arr.shape[:2]
 
-    # Check if Cellpose segmentation mask is already cached in memory
+    # Check if Cellpose segmentation mask is already cached in memory (or loaded from disk)
     if not req.force_reanalyze and abs_path in SEGMENTATION_CACHE:
         cached_seg = SEGMENTATION_CACHE[abs_path]
         masks = cached_seg['masks']
+        # Ensure arr is loaded (disk cache doesn't store raw arrays)
+        if cached_seg.get('arr') is None:
+            cached_seg['arr'] = arr
         df_results = cached_seg['df'].copy()
 
         # Instantly update viability statuses in <1ms without re-running Cellpose!
@@ -176,10 +250,34 @@ def analyze_cellpose_viability(req: AnalysisRequest):
     OVERLAY_CACHE[(abs_path, "viability")] = overlay
     SESSION_DF_CACHE[abs_path] = {'arr': arr, 'overlay': overlay, 'df': df_results, 'summary': summary}
 
+    # Persist to disk for instant reload on server restart
+    _save_cache_to_disk(abs_path, masks, df_results)
+
     return {
         "summary": summary,
         "organoids": df_results.to_dict(orient="records")
     }
+
+class CacheClearRequest(BaseModel):
+    path: str
+
+@app.post("/api/cache/clear")
+def clear_cache_for_image(req: CacheClearRequest):
+    """Clears in-memory and disk cache for a specific image so Cellpose can be re-run."""
+    abs_path = os.path.abspath(req.path)
+    SEGMENTATION_CACHE.pop(abs_path, None)
+    OVERLAY_CACHE.pop((abs_path, "viability"), None)
+    SESSION_DF_CACHE.pop(abs_path, None)
+    _delete_cache_from_disk(abs_path)
+    return {"status": "cleared", "path": abs_path}
+
+@app.get("/api/cache/status")
+def get_cache_status(path: str = Query(...)):
+    """Returns whether a specific image has cached segmentation results."""
+    abs_path = os.path.abspath(path)
+    in_memory = abs_path in SEGMENTATION_CACHE
+    on_disk = _load_cache_from_disk(abs_path) is not None if not in_memory else True
+    return {"cached": in_memory or on_disk, "in_memory": in_memory, "on_disk": on_disk}
 
 @app.get("/api/image/overlay")
 def get_overlay_image(path: str = Query(...), type: str = Query("viability"), max_dim: int = Query(1600)):

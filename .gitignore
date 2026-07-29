@@ -12,9 +12,11 @@ build/
 venv/
 env/
 
-# Data & output (large files)
-data/
+# Output (generated results)
 output/
+
+# Cache (auto-generated segmentation cache)
+cache/
 
 # Logs
 *.log

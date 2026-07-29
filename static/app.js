@@ -97,6 +97,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const btnRunViability = document.getElementById('btn-run-viability');
     const btnCountRed = document.getElementById('btn-count-red');
     const btnCountOrange = document.getElementById('btn-count-orange');
+    const cacheBadgeEl = document.getElementById('cache-status-badge');
+    const btnClearCache = document.getElementById('btn-clear-cache');
 
     // Terminal DOM Elements
     const terminalBoxEl = document.getElementById('terminal-box');
@@ -439,6 +441,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         runCellposeViabilityInstant();
+        updateCacheBadge();
     }
 
     async function runCellposeViabilityInstant(forceReanalyze = false) {
@@ -516,6 +519,8 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
                 logTerminal(`[ANALYSIS COMPLETE] Delineated ${summary.total_organoid_count} organoids on GPU. Plate NK Cells: ${summary.live_nk_red_pixels.toLocaleString()} LIVE Red, ${summary.dead_nk_orange_pixels.toLocaleString()} DEAD Orange (${summary.nk_mortality_rate_percent}% NK Mortality).`, 'success');
             }
+
+            updateCacheBadge();
 
         } catch (err) {
             if (progressTimer) clearInterval(progressTimer);
@@ -963,6 +968,49 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // 11. Cellpose Rerun
     btnRunViability.addEventListener('click', () => { runCellposeViabilityInstant(true); });
+
+    // Cache Status Badge Update
+    async function updateCacheBadge() {
+        if (!currentPath || !cacheBadgeEl) return;
+        try {
+            const res = await fetch(`/api/cache/status?path=${encodeURIComponent(currentPath)}`);
+            const data = await res.json();
+            if (data.cached) {
+                cacheBadgeEl.textContent = data.in_memory ? 'Cached (Memory)' : 'Cached (Disk)';
+                cacheBadgeEl.className = `cache-badge ${data.in_memory ? 'cache-memory' : 'cache-saved'}`;
+            } else {
+                cacheBadgeEl.textContent = 'No Cache';
+                cacheBadgeEl.className = 'cache-badge cache-none';
+            }
+        } catch (e) {
+            cacheBadgeEl.textContent = 'No Cache';
+            cacheBadgeEl.className = 'cache-badge cache-none';
+        }
+    }
+
+    // Clear Cache & Re-run Cellpose
+    if (btnClearCache) {
+        btnClearCache.addEventListener('click', async () => {
+            if (!currentPath) return;
+            setTerminalStatus('CLEARING CACHE', true, 'running');
+            logTerminal('Clearing cached segmentation results...', 'warn');
+            try {
+                await fetch('/api/cache/clear', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path: currentPath })
+                });
+                logTerminal('Cache cleared. Re-running Cellpose AI from scratch...', 'info');
+                if (cacheBadgeEl) {
+                    cacheBadgeEl.textContent = 'No Cache';
+                    cacheBadgeEl.className = 'cache-badge cache-none';
+                }
+                runCellposeViabilityInstant(true);
+            } catch (err) {
+                logTerminal(`Cache clear error: ${err.message}`, 'error');
+            }
+        });
+    }
 
     // 12. NK Cell Red Pixel Count (Live Red NK Cells)
     btnCountRed.addEventListener('click', async () => {
