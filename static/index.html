@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Heidelberg Organoid & Cell Analytics Workbench</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <!-- MathJax for rendering LaTeX formulas directly in the browser -->
+    <script>
+        window.MathJax = {
+            tex: {
+                inlineMath: [['\\(', '\\)'], ['$', '$']],
+                displayMath: [['\\[', '\\]'], ['$$', '$$']]
+            },
+            svg: { fontCache: 'global' }
+        };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar File Explorer -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="brand">
+                    <span class="brand-dot"></span>
+                    <span class="logo-text">HEIDELBERG <span class="logo-light">ANALYTICS</span></span>
+                </div>
+                <div class="subtitle">Microscopy & Cell Viability Workbench</div>
+            </div>
+
+            <div class="sidebar-section-title">DATASET EXPLORER</div>
+            <div id="file-tree" class="file-tree">
+                <div class="loading-spinner">Scanning dataset...</div>
+            </div>
+
+            <div class="sidebar-footer">
+                <button id="btn-open-comparison" class="btn btn-compare">Multi-Image Comparison (0)</button>
+                <div class="gpu-badge"><span class="pulse-dot"></span> NVIDIA GTX 1650 Ti GPU</div>
+            </div>
+        </aside>
+
+        <!-- Main Content View -->
+        <main class="main-content">
+            <!-- Top Bar -->
+            <header class="top-bar">
+                <div class="current-file-info">
+                    <span id="current-filename" class="filename">Select an Image from Dataset</span>
+                    <span id="meta-badges" class="badges"></span>
+                </div>
+
+                <!-- Color Channel Isolation & Overlay Toggle Segmented Controls -->
+                <div class="channel-toolbar">
+                    <span class="toolbar-label">VIEW & CHANNELS</span>
+                    <div class="segmented-control">
+                        <button id="btn-view-raw" class="view-mode-btn" data-view="raw" title="Raw Microscopy Image">📷 RAW</button>
+                        <button id="btn-view-overlay" class="view-mode-btn active" data-view="overlay" title="Cellpose AI Overlay View">🪼 Cellpose Overlay</button>
+                    </div>
+                    <div class="segmented-control margin-left-sm">
+                        <button class="mode-btn active" data-mode="original" title="RGB Composite Overlay">Composite</button>
+                        <button class="mode-btn btn-green" data-mode="green" title="Isolated Green Channel">Green Dye</button>
+                        <button class="mode-btn btn-red" data-mode="red" title="Isolated Red Channel">Red (NK)</button>
+                        <button class="mode-btn btn-orange" data-mode="orange" title="Isolated Orange Channel">Orange</button>
+                    </div>
+                </div>
+            </header>
+
+            <!-- Action Bar: Manual Editing, Threshold & Zoom Tools -->
+            <div class="action-bar">
+                <div class="action-buttons">
+                    <button id="btn-run-viability" class="btn btn-action btn-cellpose" title="Run Cellpose AI Organoid Viability Analysis">
+                        🧫 Run Cellpose AI Analysis
+                    </button>
+                    <button id="btn-toggle-table" class="btn btn-action btn-table" title="Toggle Object Feature Table">
+                        📋 Feature Table (Toggle)
+                    </button>
+                    
+                    <!-- Adjustable Min Green Pixels Threshold Control -->
+                    <div class="threshold-control-box" title="Minimum green fluorescence pixel count inside organoid boundary to classify as DEAD">
+                        <span class="thresh-label">Min Green Pixels for DEAD:</span>
+                        <input type="number" id="min-green-pixels-input" class="thresh-input" value="1" min="0" max="500">
+                    </div>
+
+                    <button id="btn-count-red" class="btn btn-action btn-count-red" title="Quantify Red NK Cells">
+                        🔴 Red NK Cells
+                    </button>
+                    <button id="btn-count-orange" class="btn btn-action btn-count-orange" title="Quantify Orange Pixels">
+                        🟠 Orange Pixels
+                    </button>
+                    <button id="btn-mode-add" class="btn btn-action btn-edit" title="Click on image to add a missing organoid manually">
+                        + Add Organoid
+                    </button>
+                    <button id="btn-scientific-basis" class="btn btn-action btn-info" title="Scientific Methodology & Formulas">
+                        ℹ️ Methodology
+                    </button>
+                </div>
+
+                <!-- Canvas Zoom & Pan Controls -->
+                <div class="zoom-controls">
+                    <button id="btn-zoom-in" class="btn btn-zoom" title="Zoom In">+</button>
+                    <button id="btn-zoom-out" class="btn btn-zoom" title="Zoom Out">-</button>
+                    <button id="btn-reset-zoom" class="btn btn-zoom" title="Reset Zoom">Reset</button>
+                    <button id="btn-fullscreen" class="btn btn-zoom btn-fullscreen" title="Toggle Fullscreen">Fullscreen</button>
+                </div>
+            </div>
+
+            <div id="analysis-status" class="status-bar">Select an image to start analysis.</div>
+
+            <!-- Main Work Area Split View: Image Canvas & Data Table -->
+            <div class="work-area">
+                <!-- Image Viewer Canvas -->
+                <div id="viewer-container" class="viewer-container">
+                    <div id="viewer-placeholder" class="placeholder">
+                        <div class="placeholder-icon">⚪</div>
+                        <p>Select a microscopy TIFF image from the left dataset explorer.</p>
+                    </div>
+                    <div id="image-wrapper" class="image-wrapper hidden">
+                        <img id="main-image" src="" alt="Microscopy Image" title="Click on any organoid to view zoom popup & highlight table row">
+                    </div>
+                    <!-- Canvas Hover Tooltip Badge -->
+                    <div id="hover-tooltip" class="hover-tooltip hidden"></div>
+
+                    <!-- Organoid Interactive Detail Inspector Card -->
+                    <div id="organoid-detail-card" class="organoid-detail-card hidden">
+                        <div class="card-header">
+                            <div class="card-title-group">
+                                <span id="detail-card-id" class="detail-id">Organoid #15</span>
+                                <span id="detail-card-status" class="status-tag status-dead">DEAD</span>
+                            </div>
+                            <button id="btn-close-detail-card" class="btn-close">×</button>
+                        </div>
+                        <div class="card-body">
+                            <div class="detail-crop-box">
+                                <img id="detail-crop-img" src="" alt="Organoid Zoom Preview">
+                            </div>
+                            <div class="detail-stats-grid">
+                                <div class="stat-item"><span class="stat-lbl">Area</span><span id="detail-area" class="stat-val">1,250 px</span></div>
+                                <div class="stat-item"><span class="stat-lbl">Eq. Diameter</span><span id="detail-diameter" class="stat-val">39.9 px</span></div>
+                                <div class="stat-item"><span class="stat-lbl">Circularity</span><span id="detail-circularity" class="stat-val">0.85</span></div>
+                                <div class="stat-item"><span class="stat-lbl">Green Pks</span><span id="detail-green-px" class="stat-val" style="color:#2ecc71;">45</span></div>
+                                <div class="stat-item"><span class="stat-lbl">Green Mean Int.</span><span id="detail-green-mean" class="stat-val">68.4</span></div>
+                                <div class="stat-item"><span class="stat-lbl">Centroid (X,Y)</span><span id="detail-centroid" class="stat-val">(450, 680)</span></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Object-by-Object Feature Table Drawer -->
+                <div id="table-drawer" class="table-drawer hidden">
+                    <div class="drawer-header">
+                        <div class="drawer-title-group">
+                            <h3>📋 Interactive Organoid Feature Table</h3>
+                            <span class="drawer-subtitle">Click any row to open organoid zoom popup & highlight image location</span>
+                        </div>
+                        <button id="btn-download-csv" class="btn btn-download">📥 Download CSV</button>
+                    </div>
+                    
+                    <!-- Table Search & Filter Bar -->
+                    <div class="table-controls-bar">
+                        <input type="text" id="table-search" class="table-search-input" placeholder="🔍 Search by ID or value...">
+                        <select id="filter-status" class="table-filter-select">
+                            <option value="ALL">All Organoids</option>
+                            <option value="DEAD">🔴 DEAD (Green Dye +)</option>
+                            <option value="LIVE">🔵 LIVE (Clean - Blue Outline)</option>
+                        </select>
+                    </div>
+
+                    <div class="table-container">
+                        <table id="features-table">
+                            <thead>
+                                <tr>
+                                    <th data-sort="Organoid_ID">ID ↕</th>
+                                    <th data-sort="Status">Status ↕</th>
+                                    <th data-sort="Area_px">Area (px) ↕</th>
+                                    <th data-sort="Eq_Diameter_px">Eq. Diam ↕</th>
+                                    <th data-sort="Circularity">Circularity ↕</th>
+                                    <th data-sort="Green_Pixel_Count">Green Pks ↕</th>
+                                    <th data-sort="Green_Mean_Intensity">Green Mean ↕</th>
+                                    <th>Action</th>
+                                </tr>
+                            </thead>
+                            <tbody id="table-body">
+                                <tr><td colspan="8" class="table-empty">Awaiting Cellpose analysis...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Background Execution Terminal & Activity Console (Collapsed by default) -->
+            <div id="terminal-box" class="terminal-box collapsed">
+                <div class="terminal-header">
+                    <div class="terminal-title">
+                        <span class="pulse-dot-green" id="terminal-dot"></span>
+                        <span class="term-name">SYSTEM ENGINE CONSOLE</span>
+                        <span id="terminal-status-tag" class="terminal-tag tag-idle">IDLE</span>
+                    </div>
+                    <div class="terminal-actions">
+                        <button id="btn-clear-terminal" class="btn-term-action" title="Clear Console Output">Clear</button>
+                        <button id="btn-toggle-terminal" class="btn-term-action" title="Toggle Console View">Expand</button>
+                    </div>
+                </div>
+                <div id="terminal-progress" class="terminal-progress-bar hidden">
+                    <div id="terminal-progress-fill" class="progress-fill"></div>
+                </div>
+                <div id="terminal-logs" class="terminal-logs">
+                    <div class="log-entry system-msg">[SYSTEM] Heidelberg Organoid & Cell Analytics Engine initialized on NVIDIA GTX 1650 Ti GPU.</div>
+                </div>
+            </div>
+
+            <!-- Metrics Bar: Split into Organoid Viability & Plate-Wide NK Cell Population -->
+            <div id="metrics-bar" class="metrics-bar hidden">
+                <div class="metric-card cyan-card">
+                    <div class="card-title">TOTAL ORGANOIDS</div>
+                    <div id="metric-total-organoids" class="card-value">0</div>
+                    <div class="card-desc">Cellpose AI Delineated</div>
+                </div>
+
+                <div class="metric-card red-card">
+                    <div class="card-title">DEAD ORGANOIDS</div>
+                    <div id="metric-dead-organoids" class="card-value">0</div>
+                    <div id="metric-mortality-rate" class="card-sub">0% Organoid Mortality</div>
+                </div>
+
+                <div class="metric-card blue-card">
+                    <div class="card-title">LIVE ORGANOIDS</div>
+                    <div id="metric-live-organoids" class="card-value">0</div>
+                    <div class="card-desc">Clean Dye-Free (Blue Outline)</div>
+                </div>
+
+                <div class="metric-card red-card">
+                    <div class="card-title">LIVE NK CELLS (RED)</div>
+                    <div id="metric-live-nk-red" class="card-value">0</div>
+                    <div id="metric-live-nk-sub" class="card-sub">0% Plate Area</div>
+                </div>
+
+                <div class="metric-card orange-card">
+                    <div class="card-title">DEAD NK CELLS (ORANGE)</div>
+                    <div id="metric-dead-nk-orange" class="card-value">0</div>
+                    <div id="metric-dead-nk-sub" class="card-sub">0% Plate Area</div>
+                </div>
+
+                <div class="metric-card purple-card">
+                    <div class="card-title">NK CELL MORTALITY</div>
+                    <div id="metric-nk-mortality-rate" class="card-value">0.0%</div>
+                    <div class="card-sub">Dead (Orange) / Total NK %</div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Multi-Image Comparison Modal -->
+    <div id="comparison-modal" class="modal hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div>
+                    <h2>Multi-Image Spec Comparison Matrix</h2>
+                    <span class="modal-sub">Side-by-side analysis of dataset images</span>
+                </div>
+                <div class="modal-actions">
+                    <button id="btn-export-comparison-html" class="btn btn-download">Export HTML Report</button>
+                    <button id="btn-close-modal" class="btn-close">×</button>
+                </div>
+            </div>
+            <div class="modal-body">
+                <div id="comparison-matrix-container" class="matrix-container">
+                    <p>Select images to compare side-by-side.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scientific Methodology Modal with Live MathJax Rendering -->
+    <div id="scientific-modal" class="modal hidden">
+        <div class="modal-content scientific-modal-box">
+            <div class="modal-header">
+                <div>
+                    <h2>Scientific Foundations & Quantitative Formulas</h2>
+                    <span class="modal-sub">Biophysical mechanisms & mathematical definitions</span>
+                </div>
+                <button id="btn-close-sci-modal" class="btn-close">×</button>
+            </div>
+            <div class="modal-body sci-body">
+                <h3 style="color:#38bdf8;">1. Deep Learning Organoid Segmentation (Cellpose cyto3)</h3>
+                <p>Organoid boundaries are segmented using Cellpose Deep Learning (<code>cyto3</code> model). The neural network predicts spatial vector gradient flows, enabling accurate boundary segmentation of arbitrary non-circular organoid shapes without geometric bias.</p>
+
+                <h3 style="color:#f87171; margin-top:18px;">2. Organoid Mortality Rate & Dye Viability</h3>
+                <p>Dead organoids exhibit compromised plasma membrane integrity, allowing fluorescent dye to enter the cytoplasm. If internal green dye pixel count \( N_{\text{green}} \ge 1 \) or mean green intensity \( G_{\text{mean}} \ge 35.0 \), the organoid is classified as <b>DEAD</b> (outlined in Red). Otherwise it is classified as <b>LIVE</b> (outlined in Blue).</p>
+
+                <div class="formula-box">
+                    $$\text{Mortality Rate (\%)} = \left( \frac{N_{\text{dead}}}{N_{\text{total}}} \right) \times 100$$
+                </div>
+
+                <h3 style="color:#f87171; margin-top:18px;">3. Natural Killer (NK) Cell Red Pixel Quantification</h3>
+                <p>Natural Killer (NK) cells produce diffuse, non-punctate fluorescence signals. Rather than imposing arbitrary discrete object counts, NK cells are quantified by exact red pixel count and field-of-view area percentage in HSV color space:</p>
+
+                <div class="formula-box">
+                    $$\text{NK Red Coverage (\%)} = \left( \frac{\text{Red Pixels (px)}}{\text{Image Width} \times \text{Image Height}} \right) \times 100$$
+                </div>
+
+                <h3 style="color:#fb923c; margin-top:18px;">4. Objective Morphometric Metrics</h3>
+                <ul>
+                    <li><b>Circularity:</b> $$\text{Circularity} = \frac{4\pi \times \text{Area}}{\text{Perimeter}^2} \quad (1.0 = \text{perfect circle})$$</li>
+                    <li><b>Contour Roughness:</b> $$\text{Roughness} = \frac{\text{Perimeter}}{\text{Perimeter}_{\min}} \quad \text{where } \text{Perimeter}_{\min} = 2\sqrt{\pi \times \text{Area}}$$</li>
+                    <li><b>Equivalent Diameter:</b> $$\text{Equivalent Diameter} = 2\sqrt{\frac{\text{Area}}{\pi}}$$</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
