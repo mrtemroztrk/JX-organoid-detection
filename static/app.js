@@ -7,6 +7,11 @@ document.addEventListener('DOMContentLoaded', () => {
     let batchResultsCache = [];
     let isAddMode = false;
 
+    // Original image dimensions (full-res, from server)
+    // Centroids in the table are in this coordinate space.
+    let originalWidth = 0;
+    let originalHeight = 0;
+
     // Table Filtering & Sorting state
     let searchQuery = '';
     let filterStatus = 'ALL';
@@ -408,6 +413,15 @@ document.addEventListener('DOMContentLoaded', () => {
         imageWrapperEl.classList.remove('hidden');
         updateImageSrc();
 
+        // Reset state for new image
+        currentOrganoids = [];
+        selectedOrganoid = null;
+        originalWidth = 0;
+        originalHeight = 0;
+        tableBodyEl.innerHTML = '<tr><td colspan="8" class="table-empty">Loading analysis...</td></tr>';
+        if (detailCardEl) detailCardEl.classList.add('hidden');
+        resetZoom();
+
         const cached = batchResultsCache.find(r => r.filename === filename || r.filepath === path);
         if (cached) {
             metricsBarEl.classList.remove('hidden');
@@ -463,6 +477,10 @@ document.addEventListener('DOMContentLoaded', () => {
             const result = await res.json();
             const elapsed = Math.round(performance.now() - startTime);
             const summary = result.summary;
+
+            // Store original image dimensions for coordinate mapping
+            if (summary.original_width) originalWidth = summary.original_width;
+            if (summary.original_height) originalHeight = summary.original_height;
 
             if (progressTimer) clearInterval(progressTimer);
 
@@ -745,18 +763,20 @@ document.addEventListener('DOMContentLoaded', () => {
             const containerW = rect.width;
             const containerH = rect.height;
 
-            // Compute display scale factor (natural image px -> displayed px at scale=1)
+            // Convert centroid from original full-res coords to displayed coords (at scale=1)
+            const natW = mainImgEl.naturalWidth || 1;
+            const natH = mainImgEl.naturalHeight || 1;
+            const origW = originalWidth || natW;
+            const origH = originalHeight || natH;
             const displayedW = mainImgEl.clientWidth;
             const displayedH = mainImgEl.clientHeight;
-            const imgScaleX = displayedW / mainImgEl.naturalWidth;
-            const imgScaleY = displayedH / mainImgEl.naturalHeight;
+
+            // Map: original coords -> natural (resized) coords -> displayed CSS coords
+            const objDisplayX = (cx / origW) * natW * (displayedW / natW);
+            const objDisplayY = (cy / origH) * natH * (displayedH / natH);
 
             // Target zoom level
             scale = 3.5;
-
-            // Position of the organoid centroid in displayed-pixel space (at scale=1)
-            const objDisplayX = cx * imgScaleX;
-            const objDisplayY = cy * imgScaleY;
 
             // Pan so that the organoid centroid is at the center of the viewer container
             panX = (containerW / 2) - (objDisplayX * scale);
@@ -776,11 +796,19 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         const rect = mainImgEl.getBoundingClientRect();
-        const scaleX = mainImgEl.naturalWidth / rect.width;
-        const scaleY = mainImgEl.naturalHeight / rect.height;
+        // Map mouse position to ORIGINAL full-res image coordinates
+        // rect already reflects CSS transform (zoom/pan), so clientX-rect.left gives position within displayed image
+        // naturalWidth is the resized image (max 1600px), but centroids are in original full-res space
+        const natW = mainImgEl.naturalWidth || 1;
+        const natH = mainImgEl.naturalHeight || 1;
+        const origW = originalWidth || natW;
+        const origH = originalHeight || natH;
 
-        const clickX = Math.round((e.clientX - rect.left) * scaleX);
-        const clickY = Math.round((e.clientY - rect.top) * scaleY);
+        const mouseInNatX = (e.clientX - rect.left) / rect.width * natW;
+        const mouseInNatY = (e.clientY - rect.top) / rect.height * natH;
+        // Scale from displayed-natural coords to original-image coords
+        const clickX = Math.round(mouseInNatX * (origW / natW));
+        const clickY = Math.round(mouseInNatY * (origH / natH));
 
         let closest = null;
         let minDistance = Infinity;
@@ -790,7 +818,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const cy = obj.Centroid_Y;
             if (cx === undefined || cy === undefined) return;
             const dist = Math.sqrt((cx - clickX) ** 2 + (cy - clickY) ** 2);
-            const objRadius = Math.max(obj.Width_px || 40, obj.Height_px || 40) / 2 + 20;
+            const objRadius = Math.max(obj.Width_px || 40, obj.Height_px || 40) / 2 + 25;
 
             if (dist < minDistance && dist <= objRadius) {
                 minDistance = dist;
@@ -839,11 +867,16 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!currentPath) return;
 
         const rect = mainImgEl.getBoundingClientRect();
-        const scaleX = mainImgEl.naturalWidth / rect.width;
-        const scaleY = mainImgEl.naturalHeight / rect.height;
+        // Map mouse position to ORIGINAL full-res image coordinates
+        const natW = mainImgEl.naturalWidth || 1;
+        const natH = mainImgEl.naturalHeight || 1;
+        const origW = originalWidth || natW;
+        const origH = originalHeight || natH;
 
-        const clickX = Math.round((e.clientX - rect.left) * scaleX);
-        const clickY = Math.round((e.clientY - rect.top) * scaleY);
+        const mouseInNatX = (e.clientX - rect.left) / rect.width * natW;
+        const mouseInNatY = (e.clientY - rect.top) / rect.height * natH;
+        const clickX = Math.round(mouseInNatX * (origW / natW));
+        const clickY = Math.round(mouseInNatY * (origH / natH));
 
         if (isAddMode) {
             // Mode A: Add Manual Organoid

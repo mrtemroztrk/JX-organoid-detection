@@ -112,6 +112,7 @@ def analyze_cellpose_viability(req: AnalysisRequest):
         raise HTTPException(status_code=404, detail="File not found")
 
     arr = get_cached_raw_image(abs_path)
+    orig_h, orig_w = arr.shape[:2]
 
     # Check if Cellpose segmentation mask is already cached in memory
     if not req.force_reanalyze and abs_path in SEGMENTATION_CACHE:
@@ -130,12 +131,23 @@ def analyze_cellpose_viability(req: AnalysisRequest):
         live_cnt = total_cnt - dead_cnt
         mortality_pct = round((dead_cnt / total_cnt * 100.0), 1) if total_cnt > 0 else 0.0
 
+        # Recompute NK cell stats from the same image
+        nk_stats = analyzer.quantify_nk_cells_plate(arr)
+
         summary = {
             'total_organoid_count': total_cnt,
             'dead_organoid_count': dead_cnt,
             'live_organoid_count': live_cnt,
             'mortality_rate_percent': mortality_pct,
-            'from_cache': True
+            'from_cache': True,
+            'live_nk_red_pixels': nk_stats['live_nk_red_pixels'],
+            'dead_nk_orange_pixels': nk_stats['dead_nk_orange_pixels'],
+            'total_nk_pixels': nk_stats['total_nk_pixels'],
+            'nk_mortality_rate_percent': nk_stats['nk_mortality_rate_percent'],
+            'live_nk_coverage_percent': nk_stats['live_nk_coverage_percent'],
+            'dead_nk_coverage_percent': nk_stats['dead_nk_coverage_percent'],
+            'original_width': orig_w,
+            'original_height': orig_h
         }
 
         # Generate updated overlay instantly (<5ms)
@@ -153,6 +165,8 @@ def analyze_cellpose_viability(req: AnalysisRequest):
         arr, min_green_pixels_threshold=req.min_green_pixels, return_masks=True
     )
     summary['from_cache'] = False
+    summary['original_width'] = orig_w
+    summary['original_height'] = orig_h
 
     SEGMENTATION_CACHE[abs_path] = {
         'masks': masks,
